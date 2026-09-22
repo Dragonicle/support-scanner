@@ -29,7 +29,7 @@ the CSV. Nothing runs until you click Refresh — reopening the page later
 just shows whatever you last refreshed, it doesn't hit the network again
 on its own.
 
-### Sharing it with someone else (e.g. your dad)
+### Sharing it with someone else
 
 This runs on your own machine — free, but only reachable while your
 machine is on and the command above is running. Three free options,
