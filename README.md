@@ -136,6 +136,65 @@ Set `MIN_VOLATILITY_PCT` above 0 (in the script, or the sidebar slider
 in `app.py`) to only show candidates above a volatility floor — i.e.
 "meaningful support AND volatile enough to be interesting."
 
+Selecting a candidate in `app.py` (by clicking its table row or picking
+it from the dropdown) also pulls its most recent headlines via
+`yfinance`'s free news feed — no API key, no extra service. This is
+plain news, not AI-generated analysis or a trade suggestion: it's there
+so you can quickly check whether something newsworthy (earnings, a
+lawsuit, a guidance cut) might explain why a stock is sitting near
+support, before you go inspect it further yourself.
+
+## Resistance
+
+Alongside the nearest support zone, each candidate also gets the
+**nearest qualifying resistance zone above current price** — detected
+the same way support is (clustered swing highs, scored by touches and
+recency), just mirrored. It's shown for context (how much room a stock
+has before hitting resistance) and is purely informational — it never
+filters candidates in or out. A candidate trading above every detected
+resistance zone (e.g. making new highs) shows `None found` rather than
+a fabricated level.
+
+## Plain-English summary
+
+Each candidate also gets a one-line summary, built entirely by
+templating fields already on the `Candidate` object — no AI involved —
+e.g. *"AAPL is 2.3% above a strong support level tested 4 times in ~6
+months, High volatility (48%). Nearest resistance is ≈$210 (7.1% above
+current price)."* It's shown above the chart in `app.py` (and included
+as a `summary` column in the CSV) so you don't have to mentally
+reassemble the row of numbers yourself.
+
+## Watchlist (web app only)
+
+Tickers entered in the sidebar's Watchlist field always appear in the
+results — even if they currently fall outside your distance or
+volatility filters — so a stock you're actively tracking doesn't
+silently disappear just because it moved a bit. They're marked with a
+star (★) in the table and always sorted to the top, regardless of the
+chosen sort order. A watchlist ticker still needs a valid, qualifying
+support zone to show up at all (this is a support scanner, not a
+general price tracker) — liquidity and distance/volatility filters are
+bypassed for it, but the underlying support detection still has to find
+something.
+
+## Compare candidates (web app only)
+
+Pick 2–3 candidates from the multiselect near the bottom of `app.py` to
+see their charts and key stats (distance to support, volatility,
+nearest resistance) side by side — useful when deciding between a
+few setups rather than looking at them one at a time.
+
+## News (web app only)
+
+Selecting a candidate in `app.py` (by clicking its table row or picking
+it from the dropdown) also pulls its most recent headlines via
+`yfinance`'s free news feed — no API key, no extra service. This is
+plain news, not AI-generated analysis or a trade suggestion: it's there
+so you can quickly check whether something newsworthy (earnings, a
+lawsuit, a guidance cut) might explain why a stock is sitting near
+support, before you go inspect it further yourself.
+
 ## Parameters (all in `support_scanner.py`, top of file — or the sidebar in `app.py`)
 
 | Parameter | Default | Meaning |
