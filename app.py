@@ -100,7 +100,7 @@ min_avg_volume = st.sidebar.number_input(
 )
 
 st.sidebar.divider()
-refresh_clicked = st.sidebar.button("🔄 Refresh live data", type="primary",
+refresh_clicked = st.sidebar.button("Refresh live data", type="primary",
                                      use_container_width=True)
 
 
@@ -127,7 +127,7 @@ def _apply_config_to_scanner():
 # Main panel
 # ----------------------------------------------------------------------
 
-st.title("📉 Support-Level Stock Scanner")
+st.title("Support-Level Stock Scanner")
 st.caption(
     "Finds US stocks currently trading close to a meaningful, multi-touch "
     "horizontal support zone. This flags a **technical setup only** — not "
@@ -169,7 +169,7 @@ if refresh_clicked:
 result = st.session_state.scan_result
 
 if result is None:
-    st.info("Click **🔄 Refresh live data** in the sidebar to run the first scan.")
+    st.info("Click **Refresh live data** in the sidebar to run the first scan.")
     st.stop()
 
 # --- summary row ---
@@ -219,7 +219,7 @@ st.dataframe(
 
 csv_bytes = df_results.to_csv(index=False).encode("utf-8")
 st.download_button(
-    "⬇️ Download results as CSV",
+    "Download results as CSV",
     data=csv_bytes,
     file_name=f"support_scan_{st.session_state.last_updated.strftime('%Y%m%d_%H%M')}.csv",
     mime="text/csv",
