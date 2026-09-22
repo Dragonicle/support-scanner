@@ -327,8 +327,39 @@ if fig is not None:
 else:
     st.warning("matplotlib isn't installed, so charts can't be rendered here.")
 
-with st.expander("Diagnostic breakdown (why other tickers were excluded)"):
-    st.json(result.stats)
+# --- news for the selected candidate ---
+st.subheader(f"Recent news — {selected.ticker}")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_news(ticker: str):
+    # Cached per ticker for 30 minutes so switching back and forth between
+    # candidates (or other widget interactions that rerun the whole script)
+    # doesn't re-fetch the same ticker's news repeatedly.
+    return scanner.fetch_ticker_news(ticker, max_items=6)
+
+
+def _format_news_time(published):
+    if not published:
+        return ""
+    try:
+        dt = pd.to_datetime(published, utc=True)
+        return dt.tz_convert(SGT).strftime("%d %b %Y, %I:%M %p") + " SGT"
+    except Exception:
+        return ""
+
+
+news_items = _cached_news(selected.ticker)
+if news_items:
+    for article in news_items:
+        title = article["title"]
+        link = article.get("link")
+        publisher = article.get("publisher") or "Unknown source"
+        when = _format_news_time(article.get("published"))
+        st.markdown(f"**[{title}]({link})**" if link else f"**{title}**")
+        st.caption(f"{publisher} · {when}" if when else publisher)
+else:
+    st.caption("No recent news found for this ticker.")
 
 st.divider()
 st.caption(
