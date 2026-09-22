@@ -62,14 +62,17 @@ st.set_page_config(
     layout="wide",
 )
 
-# Hide Streamlit's default chrome (hamburger menu, "Made with Streamlit"
-# footer) for a cleaner, more app-like presentation.
+# Hide Streamlit's default chrome (the "hamburger" menu with
+# Rerun/Settings/About, and the "Made with Streamlit" footer) for a
+# cleaner, more app-like presentation. Deliberately NOT hiding the whole
+# <header> element — on mobile, the sidebar's open/close toggle lives
+# inside it, so hiding the header entirely makes the sidebar unreachable
+# on a phone.
 st.markdown(
     """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
     </style>
     """,
     unsafe_allow_html=True,
