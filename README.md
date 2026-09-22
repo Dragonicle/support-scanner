@@ -29,7 +29,7 @@ the CSV. Nothing runs until you click Refresh — reopening the page later
 just shows whatever you last refreshed, it doesn't hit the network again
 on its own.
 
-### Sharing it with someone else
+### Sharing it with someone else (e.g. your dad)
 
 This runs on your own machine — free, but only reachable while your
 machine is on and the command above is running. Three free options,
@@ -117,6 +117,25 @@ approximates how a human draws a horizontal support line:
   (`INCLUDE_ETFS = False`); the S&P 500 / Nasdaq-100 lists are equity
   index constituents anyway, so this mainly guards manual `EXTRA_TICKERS`
 
+## Volatility (for options context)
+
+Each candidate also gets a **Volatility %** — annualized realized
+(historical) volatility, computed from the standard deviation of daily
+log returns over the last `VOLATILITY_WINDOW` days (default 20),
+annualized (`× √252`), using the same price data already downloaded —
+no extra API calls. Candidates are also bucketed into a `Vol Tier`
+(Low / Moderate / High / Very High) for quick scanning.
+
+**This is not implied volatility (IV).** IV comes from live options
+prices, which isn't available for free the way daily bars are — realized
+volatility is a proxy for "how much has this stock actually moved,"
+useful context for gauging premium potential, but it's not a
+replacement for checking the real options chain before trading.
+
+Set `MIN_VOLATILITY_PCT` above 0 (in the script, or the sidebar slider
+in `app.py`) to only show candidates above a volatility floor — i.e.
+"meaningful support AND volatile enough to be interesting."
+
 ## Parameters (all in `support_scanner.py`, top of file — or the sidebar in `app.py`)
 
 | Parameter | Default | Meaning |
@@ -129,6 +148,7 @@ approximates how a human draws a horizontal support line:
 | `MAX_DISTANCE_FROM_SUPPORT` | 0.05 | The 5% filter — change to 0.03, 0.10, etc. Nothing else needs editing |
 | `MIN_PRICE` | 10.0 | Minimum share price |
 | `MIN_AVG_VOLUME` | 500,000 | Minimum 20-day average volume |
+| `MIN_VOLATILITY_PCT` | 0 (off) | Minimum annualized realized volatility %; raise to only show volatile candidates (useful for options premium) |
 | `INCLUDE_SP500` / `INCLUDE_NASDAQ100` | True / True | Which index lists to pull for the universe |
 | `EXTRA_TICKERS` | `[]` | Any tickers to add manually |
 | `GENERATE_CHARTS` / `MAX_CHARTS` | True / 40 | Whether to render PNG charts, and a cap for very large hit lists |
