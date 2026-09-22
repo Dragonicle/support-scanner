@@ -105,6 +105,16 @@ WIKI_SCRAPE_DEBUG = False
 # diagnosing why the live Nasdaq-100 scrape isn't finding the constituents
 # table on your machine — paste that output back for a proper fix.
 
+WATCHLIST: List[str] = []
+# Tickers here are always analyzed and always shown in the results —
+# even if they currently fall outside MAX_DISTANCE_FROM_SUPPORT or
+# MIN_VOLATILITY_PCT — so you don't lose track of a stock you're
+# actively watching just because it moved slightly out of range. They
+# still need a valid, qualifying support zone to appear at all (this is
+# a support scanner, not a general stock tracker), and liquidity filters
+# (MIN_PRICE, MIN_AVG_VOLUME) are still bypassed for them since you
+# added them on purpose.
+
 # --- Lookback / candle settings ---------------------------------------
 LOOKBACK_DAYS = 180
 # How many calendar days of daily history to pull per ticker.
@@ -481,17 +491,38 @@ def find_swing_lows(df: pd.DataFrame, left: int, right: int) -> pd.DataFrame:
     return df.iloc[idx]
 
 
-def cluster_support_zones(swing_lows: pd.DataFrame, tolerance: float) -> List[SupportZone]:
+def find_swing_highs(df: pd.DataFrame, left: int, right: int) -> pd.DataFrame:
     """
-    Cluster swing-low prices that are within `tolerance` (fractional) of
-    each other into SupportZone objects.
+    The mirror image of find_swing_lows: rows whose High is a local
+    maximum — used to detect resistance zones the same way swing lows
+    are used to detect support.
     """
-    if swing_lows.empty:
+    highs = df["High"].values
+    n = len(highs)
+    idx = []
+    for i in range(left, n - right):
+        window_left = highs[i - left:i]
+        window_right = highs[i + 1:i + 1 + right]
+        if highs[i] >= window_left.max() and highs[i] >= window_right.max():
+            idx.append(i)
+    return df.iloc[idx]
+
+
+def cluster_support_zones(swing_points: pd.DataFrame, tolerance: float,
+                           value_col: str = "Low") -> List[SupportZone]:
+    """
+    Cluster swing prices that are within `tolerance` (fractional) of
+    each other into SupportZone objects. Works for support (value_col=
+    "Low", swing lows) and resistance (value_col="High", swing highs)
+    alike — the clustering/scoring logic is identical either way, only
+    the input points differ.
+    """
+    if swing_points.empty:
         return []
 
-    pts = swing_lows[["Low"]].copy()
-    pts["date"] = swing_lows.index
-    pts = pts.sort_values("Low")
+    pts = swing_points[[value_col]].copy()
+    pts["date"] = swing_points.index
+    pts = pts.sort_values(value_col)
 
     zones: List[SupportZone] = []
     current_prices: List[float] = []
@@ -512,7 +543,7 @@ def cluster_support_zones(swing_lows: pd.DataFrame, tolerance: float) -> List[Su
 
     ref_price = None
     for _, row in pts.iterrows():
-        p = float(row["Low"])
+        p = float(row[value_col])
         d = row["date"]
         if ref_price is None:
             ref_price = p
@@ -539,7 +570,8 @@ def score_support_zones(zones: List[SupportZone], as_of: pd.Timestamp,
     """
     Score each zone in place based on: number of touches, recency of
     touches (exponential decay), and touch tightness. Also assigns a
-    human-readable strength_label.
+    human-readable strength_label. Used for both support and resistance
+    zones — the scoring logic doesn't care which direction the zone is.
     """
     for zone in zones:
         if zone.touches < 1:
@@ -570,18 +602,28 @@ def score_support_zones(zones: List[SupportZone], as_of: pd.Timestamp,
             zone.strength_label = "Weak"
 
 
+def select_nearest_zone(zones: List[SupportZone], current_price: float,
+                         direction: str) -> Optional[SupportZone]:
+    """
+    direction="below": nearest qualifying zone below current_price (support).
+    direction="above": nearest qualifying zone above current_price (resistance).
+    A zone must have at least MIN_TOUCHES to qualify either way.
+    """
+    if direction == "below":
+        candidates = [z for z in zones if z.price < current_price and z.touches >= MIN_TOUCHES]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda z: current_price - z.price)
+    else:
+        candidates = [z for z in zones if z.price > current_price and z.touches >= MIN_TOUCHES]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda z: z.price - current_price)
+
+
 def select_nearest_support(zones: List[SupportZone], current_price: float) -> Optional[SupportZone]:
-    """
-    Among zones below current_price with enough touches to matter,
-    return the one whose price is closest to (just below) current_price.
-    """
-    candidates = [
-        z for z in zones
-        if z.price < current_price and z.touches >= MIN_TOUCHES
-    ]
-    if not candidates:
-        return None
-    return min(candidates, key=lambda z: current_price - z.price)
+    """Backward-compatible name — nearest qualifying support zone below current price."""
+    return select_nearest_zone(zones, current_price, direction="below")
 
 
 # ----------------------------------------------------------------------
@@ -603,9 +645,44 @@ class Candidate:
     lookback_days: int
     volatility_pct: float
     volatility_tier: str
+    resistance: Optional[float]
+    resistance_distance_pct: Optional[float]
+    resistance_touches: Optional[int]
+    resistance_strength: Optional[str]
     df: pd.DataFrame
     zone: SupportZone
     all_zones: List[SupportZone]
+    resistance_zone: Optional[SupportZone] = None
+    from_watchlist: bool = False
+
+
+def summarize_candidate(c: "Candidate") -> str:
+    """
+    A one-line, plain-English summary of a candidate, built entirely from
+    fields already on the Candidate — no AI, just templating. Meant to be
+    easier to skim at a glance than a row of table columns.
+    """
+    vol_part = (
+        f"{c.volatility_tier} volatility ({c.volatility_pct:.0f}%)"
+        if not np.isnan(c.volatility_pct) else "volatility unavailable"
+    )
+    months = round(c.lookback_days / 30)
+    period = f"~{months} month{'s' if months != 1 else ''}"
+
+    sentence = (
+        f"{c.ticker} is {c.distance_pct:.1f}% above a {c.strength.lower()} support level "
+        f"tested {c.touches} time{'s' if c.touches != 1 else ''} in {period}, {vol_part}."
+    )
+
+    if c.resistance is not None and c.resistance_distance_pct is not None:
+        sentence += (
+            f" Nearest resistance is ≈${c.resistance:.2f} "
+            f"({c.resistance_distance_pct:.1f}% above current price)."
+        )
+    else:
+        sentence += " No clear resistance found within the lookback window."
+
+    return sentence
 
 
 def compute_realized_volatility(df: pd.DataFrame, window: int) -> float:
@@ -639,7 +716,16 @@ def volatility_tier(vol_pct: float) -> str:
     return "Low"
 
 
-def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None) -> Optional[Candidate]:
+def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None,
+                    bypass_filters: bool = False) -> Optional[Candidate]:
+    """
+    bypass_filters=True skips the liquidity (MIN_PRICE, MIN_AVG_VOLUME),
+    distance-window, and min-volatility filters — used for WATCHLIST
+    tickers so they always show up regardless of current filter settings.
+    A valid, qualifying support zone is still required either way; this
+    is a support scanner, so a ticker with no detectable support simply
+    can't produce a Candidate.
+    """
     def bump(key):
         if stats is not None:
             stats[key] = stats.get(key, 0) + 1
@@ -656,19 +742,20 @@ def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None) 
     if current_price <= 0 or np.isnan(current_price):
         bump("bad_price_data")
         return None
-    if current_price < MIN_PRICE:
-        bump("below_min_price")
-        return None
-    if avg_vol < MIN_AVG_VOLUME:
-        bump("below_min_volume")
-        return None
+    if not bypass_filters:
+        if current_price < MIN_PRICE:
+            bump("below_min_price")
+            return None
+        if avg_vol < MIN_AVG_VOLUME:
+            bump("below_min_volume")
+            return None
 
     swing_lows = find_swing_lows(df, SWING_LEFT, SWING_RIGHT)
     if swing_lows.empty:
         bump("no_swing_lows")
         return None
 
-    zones = cluster_support_zones(swing_lows, SUPPORT_CLUSTER_TOLERANCE)
+    zones = cluster_support_zones(swing_lows, SUPPORT_CLUSTER_TOLERANCE, value_col="Low")
     if not zones:
         bump("no_support_zones")
         return None
@@ -676,22 +763,46 @@ def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None) 
     as_of = pd.Timestamp(df.index[-1])
     score_support_zones(zones, as_of, RECENCY_HALF_LIFE_DAYS)
 
-    best = select_nearest_support(zones, current_price)
+    best = select_nearest_zone(zones, current_price, direction="below")
     if best is None:
         bump("no_qualifying_support_below_price")
         return None
 
     distance_pct = (current_price - best.price) / best.price * 100.0
 
-    if not (MIN_DISTANCE_FROM_SUPPORT * 100 <= distance_pct <= MAX_DISTANCE_FROM_SUPPORT * 100):
-        bump("outside_distance_window")
-        return None
+    if not bypass_filters:
+        if not (MIN_DISTANCE_FROM_SUPPORT * 100 <= distance_pct <= MAX_DISTANCE_FROM_SUPPORT * 100):
+            bump("outside_distance_window")
+            return None
 
     vol_pct = compute_realized_volatility(df, VOLATILITY_WINDOW)
 
-    if MIN_VOLATILITY_PCT > 0 and (np.isnan(vol_pct) or vol_pct < MIN_VOLATILITY_PCT):
-        bump("below_min_volatility")
-        return None
+    if not bypass_filters:
+        if MIN_VOLATILITY_PCT > 0 and (np.isnan(vol_pct) or vol_pct < MIN_VOLATILITY_PCT):
+            bump("below_min_volatility")
+            return None
+
+    # --- nearby resistance (informational only — never filters candidates out) ---
+    swing_highs = find_swing_highs(df, SWING_LEFT, SWING_RIGHT)
+    resistance_zone = None
+    if not swing_highs.empty:
+        res_zones = cluster_support_zones(swing_highs, SUPPORT_CLUSTER_TOLERANCE, value_col="High")
+        if res_zones:
+            score_support_zones(res_zones, as_of, RECENCY_HALF_LIFE_DAYS)
+            resistance_zone = select_nearest_zone(res_zones, current_price, direction="above")
+
+    if resistance_zone is not None:
+        resistance = round(resistance_zone.price, 2)
+        resistance_distance_pct = round(
+            (resistance_zone.price - current_price) / current_price * 100.0, 2
+        )
+        resistance_touches = resistance_zone.touches
+        resistance_strength = resistance_zone.strength_label
+    else:
+        resistance = None
+        resistance_distance_pct = None
+        resistance_touches = None
+        resistance_strength = None
 
     bump("passed")
 
@@ -709,9 +820,15 @@ def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None) 
         lookback_days=LOOKBACK_DAYS,
         volatility_pct=round(vol_pct, 1) if not np.isnan(vol_pct) else float("nan"),
         volatility_tier=volatility_tier(vol_pct),
+        resistance=resistance,
+        resistance_distance_pct=resistance_distance_pct,
+        resistance_touches=resistance_touches,
+        resistance_strength=resistance_strength,
         df=df,
         zone=best,
         all_zones=zones,
+        resistance_zone=resistance_zone,
+        from_watchlist=False,  # set by run_scan() for watchlist-sourced candidates
     )
 
 
@@ -771,6 +888,19 @@ def build_chart_figure(candidate: Candidate):
     ax.axhline(max_line, color="#f57c00", linestyle=":", linewidth=1.2,
                label=f"{MAX_DISTANCE_FROM_SUPPORT*100:.0f}% above support = {max_line:.2f}")
 
+    # --- nearby resistance, if any was found ---
+    if candidate.resistance_zone is not None:
+        rzone = candidate.resistance_zone
+        ax.axhspan(rzone.low, rzone.high, color="#c62828", alpha=0.12,
+                   label=f"Resistance zone ({rzone.touches} touches)")
+        ax.axhline(rzone.price, color="#c62828", linestyle="--", linewidth=1.2,
+                   label=f"Resistance ≈ {rzone.price:.2f}")
+        res_touch_dates = mdates.date2num(
+            [pd.Timestamp(d).to_pydatetime() for d in rzone.touch_dates]
+        )
+        ax.scatter(res_touch_dates, rzone.touch_prices, marker="v", color="#c62828",
+                   s=60, zorder=5, label="Swing high (touch)")
+
     ax.xaxis_date()
     fig.autofmt_xdate()
     vol_label = f"{candidate.volatility_pct:.0f}% vol" if not np.isnan(candidate.volatility_pct) else "vol n/a"
@@ -807,17 +937,23 @@ def print_table(candidates: List[Candidate]) -> None:
               f"{MAX_DISTANCE_FROM_SUPPORT*100:.1f}% of a meaningful support level.\n")
         return
 
-    header = (f"{'Rank':>4} {'Ticker':<7} {'Price':>9} {'Support':>9} {'Distance':>9} "
-              f"{'Touches':>8} {'Strength':<9} {'Volatility':>11} {'VolTier':<10} {'AvgVol':>12}")
+    header = (f"{'Rank':>4} {'W':<1} {'Ticker':<7} {'Price':>9} {'Support':>9} {'Distance':>9} "
+              f"{'Touches':>8} {'Strength':<9} {'Volatility':>11} {'VolTier':<10} "
+              f"{'Resistance':>11} {'ResDist':>9} {'AvgVol':>12}")
     print("\nStocks within "
-          f"{MAX_DISTANCE_FROM_SUPPORT*100:.1f}% of meaningful support\n")
+          f"{MAX_DISTANCE_FROM_SUPPORT*100:.1f}% of meaningful support "
+          "(plus any watchlist tickers, marked W)\n")
     print(header)
     print("-" * len(header))
     for i, c in enumerate(candidates, 1):
         vol_str = f"{c.volatility_pct:.1f}%" if not np.isnan(c.volatility_pct) else "n/a"
-        print(f"{i:>4} {c.ticker:<7} {c.price:>9.2f} {c.support:>9.2f} "
+        res_str = f"{c.resistance:.2f}" if c.resistance is not None else "n/a"
+        res_dist_str = f"{c.resistance_distance_pct:.1f}%" if c.resistance_distance_pct is not None else "n/a"
+        watch_flag = "*" if c.from_watchlist else ""
+        print(f"{i:>4} {watch_flag:<1} {c.ticker:<7} {c.price:>9.2f} {c.support:>9.2f} "
               f"{c.distance_pct:>8.2f}% {c.touches:>8} {c.strength:<9} "
-              f"{vol_str:>11} {c.volatility_tier:<10} {c.avg_volume:>12,.0f}")
+              f"{vol_str:>11} {c.volatility_tier:<10} {res_str:>11} {res_dist_str:>9} "
+              f"{c.avg_volume:>12,.0f}")
     print()
 
 
@@ -837,8 +973,14 @@ def write_csv(candidates: List[Candidate], path: str) -> None:
             "strength_score": c.strength_score,
             "volatility_pct_annualized": c.volatility_pct,
             "volatility_tier": c.volatility_tier,
+            "resistance": c.resistance,
+            "resistance_distance_pct": c.resistance_distance_pct,
+            "resistance_touches": c.resistance_touches,
+            "resistance_strength": c.resistance_strength,
             "avg_volume_20d": c.avg_volume,
             "lookback_days": c.lookback_days,
+            "from_watchlist": c.from_watchlist,
+            "summary": summarize_candidate(c),
         })
     pd.DataFrame(rows).to_csv(path, index=False)
     print(f"[output] wrote {path}")
@@ -936,6 +1078,12 @@ def run_scan(progress_callback=None, log=print) -> ScanResult:
         log("No tickers to scan — check your internet connection / Wikipedia access.")
         return ScanResult([], {}, 0, 0, 0)
 
+    # Watchlist tickers must be downloaded even if they aren't in the
+    # chosen index universe, so they can still be analyzed and shown.
+    watchlist_clean = [t.strip().upper() for t in WATCHLIST if t.strip()]
+    if watchlist_clean:
+        universe = sorted(set(universe) | set(watchlist_clean))
+
     price_data = download_price_data(universe, LOOKBACK_DAYS, progress_callback)
 
     candidates: List[Candidate] = []
@@ -949,6 +1097,29 @@ def run_scan(progress_callback=None, log=print) -> ScanResult:
         except Exception:
             errors += 1
 
+    # Second pass: make sure every watchlist ticker is represented,
+    # bypassing the distance/volatility/liquidity filters for them. A
+    # ticker already present from the normal pass just gets flagged;
+    # one that was filtered out gets re-analyzed without those filters.
+    if watchlist_clean:
+        present = {c.ticker for c in candidates}
+        for ticker in watchlist_clean:
+            if ticker in present:
+                for c in candidates:
+                    if c.ticker == ticker:
+                        c.from_watchlist = True
+                continue
+            df = price_data.get(ticker)
+            if df is None:
+                continue
+            try:
+                c = analyze_ticker(ticker, df, stats, bypass_filters=True)
+                if c is not None:
+                    c.from_watchlist = True
+                    candidates.append(c)
+            except Exception:
+                errors += 1
+
     if errors:
         log(f"[analyze] {errors} tickers raised errors during analysis and were skipped")
 
@@ -960,7 +1131,9 @@ def run_scan(progress_callback=None, log=print) -> ScanResult:
         if key in stats:
             log(f"    {key:<35} {stats[key]}")
 
-    candidates.sort(key=lambda c: c.distance_pct)
+    # Watchlist items always float to the top, regardless of sort order;
+    # within each group, keep the usual closest-to-support-first order.
+    candidates.sort(key=lambda c: (not c.from_watchlist, c.distance_pct))
 
     return ScanResult(
         candidates=candidates,
