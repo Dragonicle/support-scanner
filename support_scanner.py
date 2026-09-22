@@ -154,6 +154,21 @@ MIN_PRICE = 10.0
 MIN_AVG_VOLUME = 500_000       # 20-day average daily volume
 AVG_VOLUME_WINDOW = 20
 
+# --- Volatility -------------------------------------------------------
+VOLATILITY_WINDOW = 20
+# Trading days used to compute annualized realized (historical) volatility
+# from daily log returns. This is NOT implied volatility (IV) — IV comes
+# from live options prices, which isn't available through a free data
+# source. Realized volatility is a free proxy for "how much does this
+# stock actually move," computed from the same price history already
+# being downloaded — useful context for options premium, but not a
+# substitute for checking the actual options chain before trading.
+MIN_VOLATILITY_PCT = 0.0
+# 0 = no filter (show everything, sorted/labeled by volatility as normal).
+# Raise this (e.g. 40) to only surface candidates with at least that much
+# annualized realized volatility — i.e. "meaningful support AND volatile
+# enough to be interesting for premium selling."
+
 # --- Output ---------------------------------------------------------------
 OUTPUT_CSV = "results.csv"
 CHARTS_DIR = "charts"
@@ -586,9 +601,42 @@ class Candidate:
     strength_score: float
     avg_volume: float
     lookback_days: int
+    volatility_pct: float
+    volatility_tier: str
     df: pd.DataFrame
     zone: SupportZone
     all_zones: List[SupportZone]
+
+
+def compute_realized_volatility(df: pd.DataFrame, window: int) -> float:
+    """
+    Annualized realized (historical) volatility, in percent, from daily
+    log returns over the last `window` trading days:
+        vol% = std(log(close_t / close_t-1)) * sqrt(252) * 100
+    This is NOT implied volatility — it's a free proxy computed purely
+    from price history, useful as a rough "how much does this move"
+    signal but not a substitute for checking the live options chain.
+    """
+    closes = df["Close"].tail(window + 1)
+    if len(closes) < 3:
+        return float("nan")
+    log_returns = np.log(closes / closes.shift(1)).dropna()
+    if log_returns.empty or log_returns.std() == 0:
+        return 0.0
+    return float(log_returns.std() * np.sqrt(252) * 100)
+
+
+def volatility_tier(vol_pct: float) -> str:
+    """Rough, configurable-in-spirit bucketing for readability in the table."""
+    if np.isnan(vol_pct):
+        return "Unknown"
+    if vol_pct >= 60:
+        return "Very High"
+    if vol_pct >= 40:
+        return "High"
+    if vol_pct >= 25:
+        return "Moderate"
+    return "Low"
 
 
 def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None) -> Optional[Candidate]:
@@ -639,6 +687,12 @@ def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None) 
         bump("outside_distance_window")
         return None
 
+    vol_pct = compute_realized_volatility(df, VOLATILITY_WINDOW)
+
+    if MIN_VOLATILITY_PCT > 0 and (np.isnan(vol_pct) or vol_pct < MIN_VOLATILITY_PCT):
+        bump("below_min_volatility")
+        return None
+
     bump("passed")
 
     return Candidate(
@@ -653,6 +707,8 @@ def analyze_ticker(ticker: str, df: pd.DataFrame, stats: Optional[dict] = None) 
         strength_score=best.strength_score,
         avg_volume=round(avg_vol, 0),
         lookback_days=LOOKBACK_DAYS,
+        volatility_pct=round(vol_pct, 1) if not np.isnan(vol_pct) else float("nan"),
+        volatility_tier=volatility_tier(vol_pct),
         df=df,
         zone=best,
         all_zones=zones,
@@ -717,8 +773,9 @@ def build_chart_figure(candidate: Candidate):
 
     ax.xaxis_date()
     fig.autofmt_xdate()
+    vol_label = f"{candidate.volatility_pct:.0f}% vol" if not np.isnan(candidate.volatility_pct) else "vol n/a"
     ax.set_title(f"{candidate.ticker} — {candidate.distance_pct:.2f}% above support "
-                 f"({candidate.strength}, {candidate.touches} touches)")
+                 f"({candidate.strength}, {candidate.touches} touches, {vol_label})")
     ax.set_ylabel("Price")
     ax.legend(loc="upper left", fontsize=8)
     ax.grid(alpha=0.2)
@@ -750,14 +807,17 @@ def print_table(candidates: List[Candidate]) -> None:
               f"{MAX_DISTANCE_FROM_SUPPORT*100:.1f}% of a meaningful support level.\n")
         return
 
-    header = f"{'Rank':>4} {'Ticker':<7} {'Price':>9} {'Support':>9} {'Distance':>9} {'Touches':>8} {'Strength':<9} {'AvgVol':>12}"
+    header = (f"{'Rank':>4} {'Ticker':<7} {'Price':>9} {'Support':>9} {'Distance':>9} "
+              f"{'Touches':>8} {'Strength':<9} {'Volatility':>11} {'VolTier':<10} {'AvgVol':>12}")
     print("\nStocks within "
           f"{MAX_DISTANCE_FROM_SUPPORT*100:.1f}% of meaningful support\n")
     print(header)
     print("-" * len(header))
     for i, c in enumerate(candidates, 1):
+        vol_str = f"{c.volatility_pct:.1f}%" if not np.isnan(c.volatility_pct) else "n/a"
         print(f"{i:>4} {c.ticker:<7} {c.price:>9.2f} {c.support:>9.2f} "
-              f"{c.distance_pct:>8.2f}% {c.touches:>8} {c.strength:<9} {c.avg_volume:>12,.0f}")
+              f"{c.distance_pct:>8.2f}% {c.touches:>8} {c.strength:<9} "
+              f"{vol_str:>11} {c.volatility_tier:<10} {c.avg_volume:>12,.0f}")
     print()
 
 
@@ -775,6 +835,8 @@ def write_csv(candidates: List[Candidate], path: str) -> None:
             "touches": c.touches,
             "strength": c.strength,
             "strength_score": c.strength_score,
+            "volatility_pct_annualized": c.volatility_pct,
+            "volatility_tier": c.volatility_tier,
             "avg_volume_20d": c.avg_volume,
             "lookback_days": c.lookback_days,
         })
@@ -839,7 +901,7 @@ def run_scan(progress_callback=None, log=print) -> ScanResult:
     for key in ("insufficient_history", "bad_price_data", "below_min_price",
                 "below_min_volume", "no_swing_lows", "no_support_zones",
                 "no_qualifying_support_below_price", "outside_distance_window",
-                "passed"):
+                "below_min_volatility", "passed"):
         if key in stats:
             log(f"    {key:<35} {stats[key]}")
 
