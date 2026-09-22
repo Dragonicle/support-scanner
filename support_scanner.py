@@ -80,7 +80,7 @@ import time
 import traceback
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -842,6 +842,61 @@ def write_csv(candidates: List[Candidate], path: str) -> None:
         })
     pd.DataFrame(rows).to_csv(path, index=False)
     print(f"[output] wrote {path}")
+
+
+# ----------------------------------------------------------------------
+# News (free, via yfinance — no API key)
+# ----------------------------------------------------------------------
+
+def fetch_ticker_news(ticker: str, max_items: int = 6) -> List[dict]:
+    """
+    Recent news headlines for a single ticker, via yfinance's free news
+    feed (no API key, no extra dependency). Returns a list of dicts with
+    keys: title, publisher, link, published — most recent first. Returns
+    an empty list (never raises) if nothing is available or the request
+    fails, so a flaky/empty news response never breaks the app.
+
+    yfinance's raw news payload shape has changed across versions — this
+    handles both the older flat schema and the newer nested "content"
+    schema so it keeps working across yfinance upgrades.
+    """
+    import yfinance as yf
+
+    try:
+        raw_items = yf.Ticker(ticker).news or []
+    except Exception:
+        return []
+
+    articles = []
+    for item in raw_items[:max_items]:
+        try:
+            if "content" in item:  # newer nested schema
+                content = item["content"]
+                title = content.get("title", "")
+                publisher = (content.get("provider") or {}).get("displayName", "")
+                url_obj = content.get("canonicalUrl") or content.get("clickThroughUrl") or {}
+                link = url_obj.get("url", "")
+                published = content.get("pubDate", "")
+            else:  # older flat schema
+                title = item.get("title", "")
+                publisher = item.get("publisher", "")
+                link = item.get("link", "")
+                ts = item.get("providerPublishTime")
+                published = (
+                    datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else ""
+                )
+
+            if title:
+                articles.append({
+                    "title": title,
+                    "publisher": publisher,
+                    "link": link,
+                    "published": published,
+                })
+        except Exception:
+            continue  # one malformed article shouldn't drop the rest
+
+    return articles
 
 
 # ----------------------------------------------------------------------
