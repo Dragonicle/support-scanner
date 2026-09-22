@@ -59,8 +59,20 @@ import support_scanner as scanner
 
 st.set_page_config(
     page_title="Support-Level Stock Scanner",
-    page_icon="📉",
     layout="wide",
+)
+
+# Hide Streamlit's default chrome (hamburger menu, "Made with Streamlit"
+# footer) for a cleaner, more app-like presentation.
+st.markdown(
+    """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 # ----------------------------------------------------------------------
@@ -99,6 +111,15 @@ min_avg_volume = st.sidebar.number_input(
     "Minimum 20-day avg volume", value=500_000, step=50_000, format="%d"
 )
 
+st.sidebar.header("Volatility (useful for options)")
+min_volatility_pct = st.sidebar.slider(
+    "Min annualized realized volatility (%)", 0, 150, 0, step=5,
+    help="0 = no filter. Realized volatility is computed from historical "
+         "price swings (not implied volatility from options prices, which "
+         "isn't available for free) — a rough proxy for how much a stock "
+         "moves, useful context for premium-selling candidates.",
+)
+
 st.sidebar.divider()
 refresh_clicked = st.sidebar.button("Refresh live data", type="primary",
                                      use_container_width=True)
@@ -121,6 +142,7 @@ def _apply_config_to_scanner():
     scanner.MAX_DISTANCE_FROM_SUPPORT = max_distance_pct / 100.0
     scanner.MIN_PRICE = min_price
     scanner.MIN_AVG_VOLUME = min_avg_volume
+    scanner.MIN_VOLATILITY_PCT = min_volatility_pct
 
 
 # ----------------------------------------------------------------------
@@ -190,8 +212,21 @@ if not result.candidates:
     st.stop()
 
 # --- results table ---
+sort_choice = st.radio(
+    "Sort by", ["Distance to support (closest first)", "Volatility (highest first)"],
+    horizontal=True,
+)
+if sort_choice.startswith("Volatility"):
+    sorted_candidates = sorted(
+        result.candidates,
+        key=lambda c: (c.volatility_pct if not pd.isna(c.volatility_pct) else -1),
+        reverse=True,
+    )
+else:
+    sorted_candidates = result.candidates  # already sorted by distance from run_scan()
+
 rows = []
-for i, c in enumerate(result.candidates, 1):
+for i, c in enumerate(sorted_candidates, 1):
     rows.append({
         "Rank": i,
         "Ticker": c.ticker,
@@ -200,11 +235,13 @@ for i, c in enumerate(result.candidates, 1):
         "Distance %": c.distance_pct,
         "Touches": c.touches,
         "Strength": c.strength,
+        "Volatility %": c.volatility_pct,
+        "Vol Tier": c.volatility_tier,
         "Avg Volume (20d)": int(c.avg_volume),
     })
 df_results = pd.DataFrame(rows)
 
-st.subheader("Candidates — closest to support first")
+st.subheader("Candidates")
 st.dataframe(
     df_results,
     use_container_width=True,
@@ -213,8 +250,17 @@ st.dataframe(
         "Price": st.column_config.NumberColumn(format="$%.2f"),
         "Support": st.column_config.NumberColumn(format="$%.2f"),
         "Distance %": st.column_config.NumberColumn(format="%.2f%%"),
+        "Volatility %": st.column_config.NumberColumn(
+            format="%.1f%%", help="Annualized realized volatility — not implied volatility."
+        ),
         "Avg Volume (20d)": st.column_config.NumberColumn(format="%d"),
     },
+)
+st.caption(
+    "Volatility % is annualized **realized** (historical) volatility from "
+    "price data — not implied volatility from options prices. Useful as a "
+    "rough proxy for premium potential, not a substitute for checking the "
+    "actual options chain."
 )
 
 csv_bytes = df_results.to_csv(index=False).encode("utf-8")
@@ -227,9 +273,9 @@ st.download_button(
 
 # --- per-stock chart ---
 st.subheader("Support chart")
-ticker_options = [c.ticker for c in result.candidates]
+ticker_options = [c.ticker for c in sorted_candidates]
 selected_ticker = st.selectbox("Pick a candidate to inspect", ticker_options)
-selected = next(c for c in result.candidates if c.ticker == selected_ticker)
+selected = next(c for c in sorted_candidates if c.ticker == selected_ticker)
 
 fig = scanner.build_chart_figure(selected)
 if fig is not None:
