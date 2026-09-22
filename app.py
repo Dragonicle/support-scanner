@@ -48,6 +48,9 @@ their limitations.
 
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+SGT = ZoneInfo("Asia/Singapore")
 
 import pandas as pd
 import streamlit as st
@@ -97,7 +100,7 @@ min_avg_volume = st.sidebar.number_input(
 )
 
 st.sidebar.divider()
-refresh_clicked = st.sidebar.button("Refresh live data", type="primary",
+refresh_clicked = st.sidebar.button("🔄 Refresh live data", type="primary",
                                      use_container_width=True)
 
 
@@ -124,10 +127,12 @@ def _apply_config_to_scanner():
 # Main panel
 # ----------------------------------------------------------------------
 
-st.title("Support-Level Stock Scanner")
+st.title("📉 Support-Level Stock Scanner")
 st.caption(
-    "Screens for stocks near a proven support level — a research starting "
-    "point, not a recommendation. Verify manually before acting."
+    "Finds US stocks currently trading close to a meaningful, multi-touch "
+    "horizontal support zone. This flags a **technical setup only** — not "
+    "a trade recommendation. Always verify manually in TradingView before "
+    "acting on anything shown here."
 )
 
 if "scan_result" not in st.session_state:
@@ -159,12 +164,12 @@ if refresh_clicked:
     status_box.empty()
 
     st.session_state.scan_result = result
-    st.session_state.last_updated = datetime.now()
+    st.session_state.last_updated = datetime.now(SGT)
 
 result = st.session_state.scan_result
 
 if result is None:
-    st.info("Click **Refresh live data** in the sidebar to run the first scan.")
+    st.info("Click **🔄 Refresh live data** in the sidebar to run the first scan.")
     st.stop()
 
 # --- summary row ---
@@ -172,7 +177,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Candidates found", len(result.candidates))
 c2.metric("Universe scanned", result.universe_size)
 c3.metric("Usable price data", result.usable_data_count)
-c4.metric("Last updated", st.session_state.last_updated.strftime("%H:%M:%S"))
+c4.metric("Last updated", st.session_state.last_updated.strftime("%H:%M:%S") + " SGT")
 
 if not result.candidates:
     st.warning(
@@ -214,7 +219,7 @@ st.dataframe(
 
 csv_bytes = df_results.to_csv(index=False).encode("utf-8")
 st.download_button(
-    "Download results as Excel(CSV)",
+    "⬇️ Download results as CSV",
     data=csv_bytes,
     file_name=f"support_scan_{st.session_state.last_updated.strftime('%Y%m%d_%H%M')}.csv",
     mime="text/csv",
