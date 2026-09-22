@@ -190,6 +190,11 @@ if refresh_clicked:
 
     st.session_state.scan_result = result
     st.session_state.last_updated = datetime.now(SGT)
+    # Clear any prior table/dropdown selection — it refers to row positions
+    # in the *previous* scan's results and would be meaningless (or
+    # actively wrong) against this new set of candidates.
+    for stale_key in ("candidates_table", "ticker_dropdown", "chart_ticker"):
+        st.session_state.pop(stale_key, None)
 
 result = st.session_state.scan_result
 
@@ -228,6 +233,8 @@ if sort_choice.startswith("Volatility"):
 else:
     sorted_candidates = result.candidates  # already sorted by distance from run_scan()
 
+ticker_options = [c.ticker for c in sorted_candidates]
+
 rows = []
 for i, c in enumerate(sorted_candidates, 1):
     rows.append({
@@ -244,14 +251,45 @@ for i, c in enumerate(sorted_candidates, 1):
     })
 df_results = pd.DataFrame(rows)
 
+# ------------------------------------------------------------------
+# Keep the table's row selection and the search dropdown in sync, in
+# both directions: clicking a row updates the dropdown, and picking
+# from the dropdown highlights the matching row. Both widgets use a
+# stable `key`, so Streamlit's own session state for each is readable
+# here before they're drawn — whichever one the user just interacted
+# with is what changed since our last resolved "chart_ticker", and we
+# push that value into the *other* widget's state before it renders.
+# ------------------------------------------------------------------
+TABLE_KEY = "candidates_table"
+DROPDOWN_KEY = "ticker_dropdown"
+
+if "chart_ticker" not in st.session_state or st.session_state.chart_ticker not in ticker_options:
+    st.session_state.chart_ticker = ticker_options[0]
+
+prior_table_rows = st.session_state.get(TABLE_KEY, {}).get("selection", {}).get("rows", [])
+table_ticker = sorted_candidates[prior_table_rows[0]].ticker if prior_table_rows else None
+dropdown_ticker = st.session_state.get(DROPDOWN_KEY)
+
+if table_ticker is not None and table_ticker != st.session_state.chart_ticker:
+    st.session_state.chart_ticker = table_ticker
+elif dropdown_ticker is not None and dropdown_ticker != st.session_state.chart_ticker:
+    st.session_state.chart_ticker = dropdown_ticker
+
+# Push the resolved ticker into both widgets' state before either is
+# instantiated below, so they open already showing/highlighting it.
+resolved_row = ticker_options.index(st.session_state.chart_ticker)
+st.session_state[TABLE_KEY] = {"selection": {"rows": [resolved_row], "columns": []}}
+st.session_state[DROPDOWN_KEY] = st.session_state.chart_ticker
+
 st.subheader("Candidates")
 st.caption("Click a row to load its support chart below — or use the dropdown to search.")
-table_event = st.dataframe(
+st.dataframe(
     df_results,
     use_container_width=True,
     hide_index=True,
     on_select="rerun",
     selection_mode="single-row",
+    key=TABLE_KEY,
     column_config={
         "Price": st.column_config.NumberColumn(format="$%.2f"),
         "Support": st.column_config.NumberColumn(format="$%.2f"),
@@ -279,26 +317,7 @@ st.download_button(
 
 # --- per-stock chart ---
 st.subheader("Support chart")
-ticker_options = [c.ticker for c in sorted_candidates]
-
-# Keep track of which ticker's chart to show, from whichever source last
-# changed it: a table row click, or a manual dropdown pick. A click on the
-# table takes priority on the run it happens, since that's the more
-# deliberate, most-recent action.
-if "chart_ticker" not in st.session_state or st.session_state.chart_ticker not in ticker_options:
-    st.session_state.chart_ticker = ticker_options[0]
-
-selected_rows = table_event["selection"]["rows"] if table_event is not None else []
-if selected_rows:
-    st.session_state.chart_ticker = sorted_candidates[selected_rows[0]].ticker
-
-dropdown_choice = st.selectbox(
-    "Or search for a candidate",
-    ticker_options,
-    index=ticker_options.index(st.session_state.chart_ticker),
-)
-if dropdown_choice != st.session_state.chart_ticker:
-    st.session_state.chart_ticker = dropdown_choice
+st.selectbox("Or search for a candidate", ticker_options, key=DROPDOWN_KEY)
 
 selected = next(c for c in sorted_candidates if c.ticker == st.session_state.chart_ticker)
 
