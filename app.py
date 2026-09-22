@@ -207,7 +207,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Candidates found", len(result.candidates))
 c2.metric("Universe scanned", result.universe_size)
 c3.metric("Usable price data", result.usable_data_count)
-c4.metric("Last updated", st.session_state.last_updated.strftime("%H:%M:%S") + " SGT")
+c4.metric("Last updated", st.session_state.last_updated.strftime("%I:%M:%S %p").lstrip("0") + " SGT")
 
 if not result.candidates:
     st.warning(
