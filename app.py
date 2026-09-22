@@ -123,6 +123,15 @@ min_volatility_pct = st.sidebar.slider(
          "moves, useful context for premium-selling candidates.",
 )
 
+st.sidebar.header("Watchlist")
+watchlist_raw = st.sidebar.text_input(
+    "Always show (comma-separated)", value="",
+    help="These tickers always appear in the results, even if they "
+         "currently fall outside your distance/volatility filters — so "
+         "you don't lose track of something you're actively watching. "
+         "They're marked with a star in the table.",
+)
+
 st.sidebar.divider()
 refresh_clicked = st.sidebar.button("Refresh live data", type="primary",
                                      use_container_width=True)
@@ -146,6 +155,7 @@ def _apply_config_to_scanner():
     scanner.MIN_PRICE = min_price
     scanner.MIN_AVG_VOLUME = min_avg_volume
     scanner.MIN_VOLATILITY_PCT = min_volatility_pct
+    scanner.WATCHLIST = [t.strip().upper() for t in watchlist_raw.split(",") if t.strip()]
 
 
 # ----------------------------------------------------------------------
@@ -238,6 +248,7 @@ ticker_options = [c.ticker for c in sorted_candidates]
 rows = []
 for i, c in enumerate(sorted_candidates, 1):
     rows.append({
+        "": "\u2605" if c.from_watchlist else "",  # star for watchlist tickers
         "Rank": i,
         "Ticker": c.ticker,
         "Price": c.price,
@@ -247,6 +258,8 @@ for i, c in enumerate(sorted_candidates, 1):
         "Strength": c.strength,
         "Volatility %": c.volatility_pct,
         "Vol Tier": c.volatility_tier,
+        "Resistance": c.resistance,
+        "Res Dist %": c.resistance_distance_pct,
         "Avg Volume (20d)": int(c.avg_volume),
     })
 df_results = pd.DataFrame(rows)
@@ -297,14 +310,22 @@ st.dataframe(
         "Volatility %": st.column_config.NumberColumn(
             format="%.1f%%", help="Annualized realized volatility — not implied volatility."
         ),
+        "Resistance": st.column_config.NumberColumn(
+            format="$%.2f", help="Nearest qualifying resistance zone above current price."
+        ),
+        "Res Dist %": st.column_config.NumberColumn(
+            format="%.1f%%", help="How far above current price the nearest resistance sits."
+        ),
         "Avg Volume (20d)": st.column_config.NumberColumn(format="%d"),
+        "": st.column_config.TextColumn(help="Starred rows are on your watchlist — always shown regardless of filters."),
     },
 )
 st.caption(
-    "Volatility % is annualized **realized** (historical) volatility from "
-    "price data — not implied volatility from options prices. Useful as a "
-    "rough proxy for premium potential, not a substitute for checking the "
-    "actual options chain."
+    "Starred rows are on your watchlist and always shown, even if outside "
+    "your current filter settings. Volatility % is annualized **realized** "
+    "(historical) volatility from price data — not implied volatility from "
+    "options prices. Resistance is the nearest qualifying zone above "
+    "current price, if one was found in the lookback window."
 )
 
 csv_bytes = df_results.to_csv(index=False).encode("utf-8")
@@ -320,6 +341,9 @@ st.subheader("Support chart")
 st.selectbox("Or search for a candidate", ticker_options, key=DROPDOWN_KEY)
 
 selected = next(c for c in sorted_candidates if c.ticker == st.session_state.chart_ticker)
+
+watchlist_note = "  *(on your watchlist — shown regardless of current filters)*" if selected.from_watchlist else ""
+st.markdown(f"{scanner.summarize_candidate(selected)}{watchlist_note}")
 
 fig = scanner.build_chart_figure(selected)
 if fig is not None:
@@ -360,6 +384,39 @@ if news_items:
         st.caption(f"{publisher} · {when}" if when else publisher)
 else:
     st.caption("No recent news found for this ticker.")
+
+st.divider()
+
+# --- side-by-side comparison ---
+st.subheader("Compare candidates")
+compare_tickers = st.multiselect(
+    "Pick 2–3 candidates to compare",
+    ticker_options,
+    max_selections=3,
+    help="Charts and key stats side by side, for weighing a few setups against each other.",
+)
+
+if len(compare_tickers) < 2:
+    st.caption("Pick at least two candidates above to compare them side by side.")
+else:
+    compare_cols = st.columns(len(compare_tickers))
+    for col, ticker in zip(compare_cols, compare_tickers):
+        c = next(cand for cand in sorted_candidates if cand.ticker == ticker)
+        with col:
+            star = " \u2605" if c.from_watchlist else ""
+            st.markdown(f"**{c.ticker}{star}**")
+            st.caption(scanner.summarize_candidate(c))
+            cfig = scanner.build_chart_figure(c)
+            if cfig is not None:
+                st.pyplot(cfig, use_container_width=True)
+            st.metric("Distance to support", f"{c.distance_pct:.2f}%")
+            vol_display = f"{c.volatility_pct:.0f}%" if not pd.isna(c.volatility_pct) else "n/a"
+            st.metric("Volatility", f"{vol_display} ({c.volatility_tier})")
+            res_display = (
+                f"${c.resistance:.2f} ({c.resistance_distance_pct:.1f}% away)"
+                if c.resistance is not None else "None found"
+            )
+            st.metric("Nearest resistance", res_display)
 
 st.divider()
 st.caption(
