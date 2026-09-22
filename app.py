@@ -245,10 +245,13 @@ for i, c in enumerate(sorted_candidates, 1):
 df_results = pd.DataFrame(rows)
 
 st.subheader("Candidates")
-st.dataframe(
+st.caption("Click a row to load its support chart below — or use the dropdown to search.")
+table_event = st.dataframe(
     df_results,
     use_container_width=True,
     hide_index=True,
+    on_select="rerun",
+    selection_mode="single-row",
     column_config={
         "Price": st.column_config.NumberColumn(format="$%.2f"),
         "Support": st.column_config.NumberColumn(format="$%.2f"),
@@ -277,8 +280,27 @@ st.download_button(
 # --- per-stock chart ---
 st.subheader("Support chart")
 ticker_options = [c.ticker for c in sorted_candidates]
-selected_ticker = st.selectbox("Pick a candidate to inspect", ticker_options)
-selected = next(c for c in sorted_candidates if c.ticker == selected_ticker)
+
+# Keep track of which ticker's chart to show, from whichever source last
+# changed it: a table row click, or a manual dropdown pick. A click on the
+# table takes priority on the run it happens, since that's the more
+# deliberate, most-recent action.
+if "chart_ticker" not in st.session_state or st.session_state.chart_ticker not in ticker_options:
+    st.session_state.chart_ticker = ticker_options[0]
+
+selected_rows = table_event["selection"]["rows"] if table_event is not None else []
+if selected_rows:
+    st.session_state.chart_ticker = sorted_candidates[selected_rows[0]].ticker
+
+dropdown_choice = st.selectbox(
+    "Or search for a candidate",
+    ticker_options,
+    index=ticker_options.index(st.session_state.chart_ticker),
+)
+if dropdown_choice != st.session_state.chart_ticker:
+    st.session_state.chart_ticker = dropdown_choice
+
+selected = next(c for c in sorted_candidates if c.ticker == st.session_state.chart_ticker)
 
 fig = scanner.build_chart_figure(selected)
 if fig is not None:
